@@ -1,0 +1,7 @@
+.sf/
+.sfdx/
+node_modules/
+changed-sources/
+test-results/
+sfdx-auth.txt
+.DS_Store

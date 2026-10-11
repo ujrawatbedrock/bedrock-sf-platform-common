@@ -1,0 +1,102 @@
+name: Platform Common PR Validation
+
+on:
+  pull_request:
+    branches: [ develop, main, 'release/**' ]
+
+jobs:
+  validate:
+    name: Validate Common Frameworks & Data Cloud
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      contents: read 
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Validate SFDX Source Format
+        run: |
+          if [ ! -f "sfdx-project.json" ]; then
+            echo "::error::Missing sfdx-project.json."
+            exit 1
+          fi
+
+      - name: Set Custom NPM Global Directory
+        run: |
+          mkdir -p ~/.npm-global
+          npm config set prefix '~/.npm-global'
+          echo "$HOME/.npm-global/bin" >> $GITHUB_PATH
+
+      - name: Cache SF CLI & Plugins
+        uses: actions/cache@v4
+        id: sf-cli-cache
+        with:
+          path: |
+            ~/.npm-global
+            ~/.local/share/sf
+          key: sf-cli-plugins-v2
+
+      - name: Install Salesforce CLI & Plugins
+        if: steps.sf-cli-cache.outputs.cache-hit != 'true'
+        run: |
+          npm install -g @salesforce/cli
+          echo y | sf plugins install @salesforce/sfdx-scanner
+          echo y | sf plugins install sfdx-git-delta
+
+      - name: Generate Delta Package
+        run: |
+          mkdir changed-sources
+          sf sgd:source:delta --to "HEAD" --from "origin/${{ github.base_ref }}" --output changed-sources/ --generate-delta --source packages
+
+      - name: Auth to Validation Sandbox
+        run: |
+          echo "${{ secrets.SFDX_AUTH_INT }}" > sfdx-auth.txt
+          sf org login sfdx-url --sfdx-url-file sfdx-auth.txt --alias validate-org --set-default
+          rm sfdx-auth.txt 
+
+      - name: Validate Deploy
+        run: |
+          HAS_CHANGES=false
+          if grep -q '<types>' changed-sources/package/package.xml 2>/dev/null; then HAS_CHANGES=true; fi
+          if grep -q '<types>' changed-sources/destructiveChanges/destructiveChanges.xml 2>/dev/null; then HAS_CHANGES=true; fi
+          
+          if [ "$HAS_CHANGES" = "false" ]; then
+            echo "✅ No metadata changes detected. Skipping validation."
+            exit 0
+          fi
+
+          CHANGED_CLASSES=$(find changed-sources -type f -path "*/classes/*.cls" -not -name "*Test.cls" 2>/dev/null | xargs -n 1 basename 2>/dev/null | cut -d. -f1)
+          CHANGED_TESTS=$(find changed-sources -type f -path "*/classes/*Test.cls" 2>/dev/null | xargs -n 1 basename 2>/dev/null | cut -d. -f1)
+          
+          TEST_FLAGS=""
+          for CLASS in $CHANGED_CLASSES; do
+            TEST_FLAGS="$TEST_FLAGS --tests ${CLASS}Test"
+          done
+          for TEST in $CHANGED_TESTS; do
+            TEST_FLAGS="$TEST_FLAGS --tests $TEST"
+          done
+          
+          if [ -z "$TEST_FLAGS" ]; then
+            sf project deploy validate \
+              --manifest changed-sources/package/package.xml \
+              --post-destructive-changes changed-sources/destructiveChanges/destructiveChanges.xml \
+              --target-org validate-org \
+              --wait 30
+          else
+            sf project deploy validate \
+              --manifest changed-sources/package/package.xml \
+              --post-destructive-changes changed-sources/destructiveChanges/destructiveChanges.xml \
+              --target-org validate-org \
+              --test-level RunSpecifiedTests \
+              $TEST_FLAGS \
+              --results-dir test-results \
+              --wait 30
+          fi

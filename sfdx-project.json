@@ -1,0 +1,18 @@
+{
+  "packageDirectories": [
+    {
+      "path": "packages/core-frameworks",
+      "default": false,
+      "package": "bedrock-core-frameworks"
+    },
+    {
+      "path": "packages/data-cloud",
+      "default": true,
+      "package": "bedrock-datacloud-core"
+    }
+  ],
+  "name": "bedrock-sf-platform-common",
+  "namespace": "",
+  "sfdcLoginUrl": "https://login.salesforce.com",
+  "sourceApiVersion": "61.0"
+}
